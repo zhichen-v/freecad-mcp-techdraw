@@ -32,6 +32,7 @@ _SETTINGS_FILENAME = "freecad_mcp_settings.json"
 _DEFAULT_SETTINGS = {
     "remote_enabled": False,
     "allowed_ips": "127.0.0.1",
+    "auto_start_rpc": False,
 }
 
 
@@ -709,26 +710,59 @@ class ConfigureAllowedIPsCommand:
         return True
 
 
+class ToggleAutoStartCommand:
+    def GetResources(self):
+        return {
+            "MenuText": "Auto-Start Server",
+            "ToolTip": "Automatically start the RPC server when FreeCAD launches.",
+            "Checkable": True,
+        }
+
+    def Activated(self, checked=0):
+        settings = load_settings()
+        settings["auto_start_rpc"] = bool(checked)
+        save_settings(settings)
+
+        if settings["auto_start_rpc"]:
+            FreeCAD.Console.PrintMessage(
+                "MCP RPC server will start automatically on next FreeCAD launch.\n"
+            )
+        else:
+            FreeCAD.Console.PrintMessage(
+                "MCP RPC server auto-start disabled.\n"
+            )
+
+    def IsActive(self):
+        return True
+
+
 FreeCADGui.addCommand("Start_RPC_Server", StartRPCServerCommand())
 FreeCADGui.addCommand("Stop_RPC_Server", StopRPCServerCommand())
+FreeCADGui.addCommand("Toggle_Auto_Start", ToggleAutoStartCommand())
 FreeCADGui.addCommand("Toggle_Remote_Connections", ToggleRemoteConnectionsCommand())
 FreeCADGui.addCommand("Configure_Allowed_IPs", ConfigureAllowedIPsCommand())
 
 
-def _sync_remote_toggle_state():
-    """Sync the Remote Connections checkbox with saved settings on startup."""
+def _sync_toggle_states():
+    """Sync checkable menu items with saved settings on startup."""
     try:
         settings = load_settings()
-        enabled = settings.get("remote_enabled", False)
         main_window = FreeCADGui.getMainWindow()
+        toggle_map = {
+            "Remote Connections": settings.get("remote_enabled", False),
+            "Auto-Start Server": settings.get("auto_start_rpc", False),
+        }
+        found = 0
         for action in main_window.findChildren(QtWidgets.QAction):
-            if action.text() == "Remote Connections":
-                action.setChecked(enabled)
-                return
+            if action.text() in toggle_map:
+                action.setChecked(toggle_map[action.text()])
+                found += 1
+                if found == len(toggle_map):
+                    return
     except Exception:
         pass
     # Retry if menu not ready yet
-    QtCore.QTimer.singleShot(2000, _sync_remote_toggle_state)
+    QtCore.QTimer.singleShot(2000, _sync_toggle_states)
 
 
-QtCore.QTimer.singleShot(2000, _sync_remote_toggle_state)
+QtCore.QTimer.singleShot(2000, _sync_toggle_states)
