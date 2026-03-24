@@ -16,12 +16,31 @@ from dataclasses import dataclass, field
 from typing import Any
 from xmlrpc.server import SimpleXMLRPCServer
 
-from PySide import QtCore, QtWidgets
+from PySide import QtCore, QtGui, QtWidgets
+try:
+    from PySide import QtSvg
+    HAS_QT_SVG = True
+except ImportError:
+    HAS_QT_SVG = False
 
 from .parts_library import get_parts_list, insert_part_from_library
 from .serialize import serialize_object
 
 rpc_server_thread = None
+
+# TechDraw template shortcut names → blank SVG filenames
+TECHDRAW_TEMPLATES = {
+    "A0_Landscape": "A0_Landscape_blank.svg",
+    "A0_Portrait": "A0_Portrait_blank.svg",
+    "A1_Landscape": "A1_Landscape_blank.svg",
+    "A1_Portrait": "A1_Portrait_blank.svg",
+    "A2_Landscape": "A2_Landscape_blank.svg",
+    "A2_Portrait": "A2_Portrait_blank.svg",
+    "A3_Landscape": "A3_Landscape_blank.svg",
+    "A3_Portrait": "A3_Portrait_blank.svg",
+    "A4_Landscape": "A4_Landscape_blank.svg",
+    "A4_Portrait": "A4_Portrait_blank.svg",
+}
 rpc_server_instance = None
 
 
@@ -334,6 +353,30 @@ class FreeCADRPC:
     def get_parts_list(self):
         return get_parts_list()
 
+    def create_techdraw_page(self, doc_name, page_name, template):
+        rpc_request_queue.put(lambda: self._create_techdraw_page_gui(doc_name, page_name, template))
+        res = rpc_response_queue.get()
+        if res is True:
+            return {"success": True, "page_name": page_name}
+        else:
+            return {"success": False, "error": str(res)}
+
+    def add_projection_group(self, doc_name, page_name, options):
+        rpc_request_queue.put(lambda: self._add_projection_group_gui(doc_name, page_name, options))
+        res = rpc_response_queue.get()
+        if res is True:
+            return {"success": True, "group_name": options.get("group_name", "ProjGroup")}
+        else:
+            return {"success": False, "error": str(res)}
+
+    def add_techdraw_view(self, doc_name, page_name, options):
+        rpc_request_queue.put(lambda: self._add_techdraw_view_gui(doc_name, page_name, options))
+        res = rpc_response_queue.get()
+        if res is True:
+            return {"success": True, "view_name": options.get("view_name", "View")}
+        else:
+            return {"success": False, "error": str(res)}
+
     def get_active_screenshot(self, view_name: str = "Isometric", width: int | None = None, height: int | None = None, focus_object: str | None = None) -> str:
         """Get a screenshot of the active view.
         
@@ -384,6 +427,70 @@ class FreeCADRPC:
                 os.remove(tmp_path)
             FreeCAD.Console.PrintWarning(f"Failed to capture screenshot: {res}\n")
             return None
+
+    def get_techdraw_screenshot(self, doc_name: str, page_name: str, width: int = 1920) -> str:
+        """Get a screenshot of a TechDraw page by rendering its SVG result to PNG.
+
+        Returns a base64-encoded PNG string, or None on failure.
+        """
+        if not HAS_QT_SVG:
+            FreeCAD.Console.PrintWarning("QtSvg not available, cannot render TechDraw page\n")
+            return None
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        rpc_request_queue.put(
+            lambda: self._get_techdraw_screenshot_gui(doc_name, page_name, tmp_path, width)
+        )
+        res = rpc_response_queue.get()
+        if res is True:
+            try:
+                with open(tmp_path, "rb") as f:
+                    encoded = base64.b64encode(f.read()).decode("utf-8")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            return encoded
+        else:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            FreeCAD.Console.PrintWarning(f"Failed to capture TechDraw screenshot: {res}\n")
+            return None
+
+    def _get_techdraw_screenshot_gui(self, doc_name: str, page_name: str, save_path: str, width: int = 1920):
+        try:
+            doc = FreeCAD.getDocument(doc_name)
+            if doc is None:
+                return f"Document '{doc_name}' not found"
+            page = doc.getObject(page_name)
+            if page is None:
+                return f"Page '{page_name}' not found in '{doc_name}'"
+
+            svg_path = page.PageResult
+            if not svg_path or not os.path.exists(svg_path):
+                return f"No SVG result available for page '{page_name}'"
+
+            renderer = QtSvg.QSvgRenderer(svg_path)
+            if not renderer.isValid():
+                return f"Failed to load SVG from '{svg_path}'"
+
+            # Calculate height proportionally from the SVG's default size
+            default_size = renderer.defaultSize()
+            if default_size.width() > 0:
+                height = int(width * default_size.height() / default_size.width())
+            else:
+                height = int(width * 0.707)  # fallback to A4 ratio
+
+            image = QtGui.QImage(width, height, QtGui.QImage.Format_ARGB32)
+            image.fill(QtCore.Qt.white)
+            painter = QtGui.QPainter(image)
+            renderer.render(painter)
+            painter.end()
+
+            image.save(save_path)
+            return True
+        except Exception as e:
+            return str(e)
 
     def _create_document_gui(self, name):
         doc = FreeCAD.newDocument(name)
@@ -503,6 +610,158 @@ class FreeCADRPC:
     def _insert_part_from_library(self, relative_path):
         try:
             insert_part_from_library(relative_path)
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _resolve_template_path(self, template):
+        """Resolve a template shortcut name or absolute path to a full SVG path.
+
+        Returns the resolved path string, or a list of available shortcut names
+        if the template cannot be found.
+        """
+        # Absolute path given and exists → use as-is
+        if os.path.isabs(template) and os.path.exists(template):
+            return template
+
+        templates_dir = os.path.join(
+            FreeCAD.getResourceDir(), "Mod", "TechDraw", "Templates"
+        )
+
+        # Shortcut name lookup
+        filename = TECHDRAW_TEMPLATES.get(template)
+        if filename:
+            path = os.path.join(templates_dir, filename)
+            if os.path.exists(path):
+                return path
+
+        # Fallback: list available shortcuts / SVG files
+        if os.path.exists(templates_dir):
+            available_files = [f for f in os.listdir(templates_dir) if f.endswith(".svg")]
+            available_shortcuts = list(TECHDRAW_TEMPLATES.keys())
+            return available_shortcuts + available_files
+        return list(TECHDRAW_TEMPLATES.keys())
+
+    def _create_techdraw_page_gui(self, doc_name, page_name, template):
+        try:
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return f"Document '{doc_name}' not found."
+
+            template_path = self._resolve_template_path(template)
+            if isinstance(template_path, list):
+                return (
+                    f"Template '{template}' not found. "
+                    f"Available shortcuts: {', '.join(TECHDRAW_TEMPLATES.keys())}. "
+                    f"You may also pass an absolute SVG path."
+                )
+
+            page = doc.addObject("TechDraw::DrawPage", page_name)
+            tmpl_obj = doc.addObject("TechDraw::DrawSVGTemplate", page_name + "_Template")
+            tmpl_obj.Template = template_path
+            page.Template = tmpl_obj
+            doc.recompute()
+
+            FreeCAD.Console.PrintMessage(
+                f"TechDraw page '{page_name}' created in '{doc_name}'.\n"
+            )
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _add_projection_group_gui(self, doc_name, page_name, options):
+        try:
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return f"Document '{doc_name}' not found."
+
+            page = doc.getObject(page_name)
+            if not page:
+                return f"Page '{page_name}' not found in document '{doc_name}'."
+
+            source_names = options.get("source_objects", [])
+            projections = options.get("projections", ["Front", "Top", "Right", "FrontTopRight"])
+            projection_type = options.get("projection_type", "Third Angle")
+            scale = float(options.get("scale", 1.0))
+            x = float(options.get("x", 0.0))
+            y = float(options.get("y", 0.0))
+            group_name = options.get("group_name", "ProjGroup")
+            anchor_direction = options.get("anchor_direction", [0, -1, 0])
+            anchor_rotation_vector = options.get("anchor_rotation_vector", [0, 0, 1])
+
+            sources = []
+            for name in source_names:
+                obj = doc.getObject(name)
+                if not obj:
+                    return f"Source object '{name}' not found in document '{doc_name}'."
+                sources.append(obj)
+
+            group = doc.addObject("TechDraw::DrawProjGroup", group_name)
+            page.addView(group)
+            group.Source = sources
+            group.ProjectionType = projection_type
+            group.Scale = scale
+            group.X = x
+            group.Y = y
+
+            # Anchor (Front) must be added first
+            anchor = group.addProjection("Front")
+            anchor.Direction = FreeCAD.Vector(*anchor_direction)
+            anchor.RotationVector = FreeCAD.Vector(*anchor_rotation_vector)
+
+            valid_projections = {
+                "Front", "Left", "Right", "Top", "Bottom", "Rear",
+                "FrontTopLeft", "FrontTopRight", "FrontBottomLeft", "FrontBottomRight",
+            }
+            for proj in projections:
+                if proj == "Front":
+                    continue  # already added as anchor
+                if proj in valid_projections:
+                    group.addProjection(proj)
+                else:
+                    FreeCAD.Console.PrintWarning(f"Unknown projection '{proj}', skipping.\n")
+
+            doc.recompute()
+            FreeCAD.Console.PrintMessage(
+                f"Projection group '{group_name}' added to page '{page_name}'.\n"
+            )
+            return True
+        except Exception as e:
+            return str(e)
+
+    def _add_techdraw_view_gui(self, doc_name, page_name, options):
+        try:
+            doc = FreeCAD.getDocument(doc_name)
+            if not doc:
+                return f"Document '{doc_name}' not found."
+
+            page = doc.getObject(page_name)
+            if not page:
+                return f"Page '{page_name}' not found in document '{doc_name}'."
+
+            source_name = options.get("source_object")
+            view_name = options.get("view_name", "View")
+            direction = options.get("direction", [0, -1, 0])
+            scale = float(options.get("scale", 1.0))
+            x = float(options.get("x", 0.0))
+            y = float(options.get("y", 0.0))
+
+            source = doc.getObject(source_name)
+            if not source:
+                return f"Source object '{source_name}' not found in document '{doc_name}'."
+
+            view = doc.addObject("TechDraw::DrawViewPart", view_name)
+            page.addView(view)
+            view.Source = [source]
+            view.Direction = FreeCAD.Vector(*direction)
+            view.Scale = scale
+            view.X = x
+            view.Y = y
+
+            doc.recompute()
+            FreeCAD.Console.PrintMessage(
+                f"TechDraw view '{view_name}' added to page '{page_name}'.\n"
+            )
             return True
         except Exception as e:
             return str(e)

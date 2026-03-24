@@ -91,6 +91,22 @@ else:
     def list_documents(self) -> list[str]:
         return self.server.list_documents()
 
+    def create_techdraw_page(self, doc_name: str, page_name: str = "Page", template: str = "A4_Landscape") -> dict[str, Any]:
+        return self.server.create_techdraw_page(doc_name, page_name, template)
+
+    def add_projection_group(self, doc_name: str, page_name: str, options: dict[str, Any]) -> dict[str, Any]:
+        return self.server.add_projection_group(doc_name, page_name, options)
+
+    def add_techdraw_view(self, doc_name: str, page_name: str, options: dict[str, Any]) -> dict[str, Any]:
+        return self.server.add_techdraw_view(doc_name, page_name, options)
+
+    def get_techdraw_screenshot(self, doc_name: str, page_name: str, width: int = 1920) -> str | None:
+        try:
+            return self.server.get_techdraw_screenshot(doc_name, page_name, width)
+        except Exception as e:
+            logger.error(f"Error getting TechDraw screenshot: {e}")
+            return None
+
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
@@ -582,6 +598,163 @@ def list_documents(ctx: Context) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(docs))]
 
 
+@mcp.tool()
+def create_techdraw_page(
+    ctx: Context,
+    doc_name: str,
+    page_name: str = "Page",
+    template: str = "A4_Landscape",
+) -> list[TextContent | ImageContent]:
+    """Create a TechDraw drawing page in a FreeCAD document.
+
+    Args:
+        doc_name: The name of the document to create the page in.
+        page_name: The name of the page object (default: "Page").
+        template: Template shortcut name (e.g. "A4_Landscape", "A3_Portrait") or
+                  an absolute path to an SVG template file.
+                  Available shortcuts: A0/A1/A2/A3/A4 × Landscape/Portrait.
+
+    Returns:
+        A message indicating success or failure, and a screenshot of the page.
+    """
+    freecad = get_freecad_connection()
+    try:
+        res = freecad.create_techdraw_page(doc_name, page_name, template)
+        if res["success"]:
+            actual_page_name = res['page_name']
+            response = [TextContent(type="text", text=f"TechDraw page '{actual_page_name}' created successfully in '{doc_name}'.")]
+            screenshot = freecad.get_techdraw_screenshot(doc_name, actual_page_name)
+            return add_screenshot_if_available(response, screenshot)
+        else:
+            return [TextContent(type="text", text=f"Failed to create TechDraw page: {res['error']}")]
+    except Exception as e:
+        logger.error(f"Failed to create TechDraw page: {str(e)}")
+        return [TextContent(type="text", text=f"Failed to create TechDraw page: {str(e)}")]
+
+
+@mcp.tool()
+def add_projection_group(
+    ctx: Context,
+    doc_name: str,
+    page_name: str,
+    source_objects: list[str],
+    projections: list[str] | None = None,
+    projection_type: str = "Third Angle",
+    scale: float = 1.0,
+    x: float = 0.0,
+    y: float = 0.0,
+    group_name: str = "ProjGroup",
+    anchor_direction: list[float] | None = None,
+    anchor_rotation_vector: list[float] | None = None,
+) -> list[TextContent | ImageContent]:
+    """Add a multi-view projection group (TechDraw::DrawProjGroup) to a TechDraw page.
+
+    The "Front" projection is always created as the anchor view. Other views are
+    derived from it according to the selected projection standard.
+
+    Args:
+        doc_name: The name of the document.
+        page_name: The name of the TechDraw page object.
+        source_objects: List of 3D object names to project.
+        projections: List of projection view names to include.
+            Valid values: Front, Left, Right, Top, Bottom, Rear,
+            FrontTopLeft, FrontTopRight, FrontBottomLeft, FrontBottomRight.
+            Default: ["Front", "Top", "Right", "FrontTopRight"].
+        projection_type: "Third Angle" (default, ISO/ANSI) or "First Angle" (European).
+        scale: View scale factor (default: 1.0).
+        x: X position of the group on the page in mm (default: 0.0).
+        y: Y position of the group on the page in mm (default: 0.0).
+        group_name: Name of the DrawProjGroup object (default: "ProjGroup").
+        anchor_direction: Direction vector [x, y, z] for the Front anchor view
+            (default: [0, -1, 0] — looking from +Y towards origin).
+        anchor_rotation_vector: Rotation vector [x, y, z] for the Front anchor view
+            (default: [0, 0, 1]).
+
+    Returns:
+        A message indicating success or failure, and a screenshot of the page.
+    """
+    freecad = get_freecad_connection()
+    try:
+        options = {
+            "source_objects": source_objects,
+            "projections": projections if projections is not None else ["Front", "Top", "Right", "FrontTopRight"],
+            "projection_type": projection_type,
+            "scale": scale,
+            "x": x,
+            "y": y,
+            "group_name": group_name,
+            "anchor_direction": anchor_direction if anchor_direction is not None else [0, -1, 0],
+            "anchor_rotation_vector": anchor_rotation_vector if anchor_rotation_vector is not None else [0, 0, 1],
+        }
+        res = freecad.add_projection_group(doc_name, page_name, options)
+        if res["success"]:
+            response = [TextContent(type="text", text=f"Projection group '{res['group_name']}' added to page '{page_name}' in '{doc_name}'.")]
+            screenshot = freecad.get_techdraw_screenshot(doc_name, page_name)
+            return add_screenshot_if_available(response, screenshot)
+        else:
+            return [TextContent(type="text", text=f"Failed to add projection group: {res['error']}")]
+    except Exception as e:
+        logger.error(f"Failed to add projection group: {str(e)}")
+        return [TextContent(type="text", text=f"Failed to add projection group: {str(e)}")]
+
+
+@mcp.tool()
+def add_techdraw_view(
+    ctx: Context,
+    doc_name: str,
+    page_name: str,
+    source_object: str,
+    view_name: str = "View",
+    direction: list[float] | None = None,
+    scale: float = 1.0,
+    x: float = 0.0,
+    y: float = 0.0,
+) -> list[TextContent | ImageContent]:
+    """Add a single 2D projection view (TechDraw::DrawViewPart) to a TechDraw page.
+
+    Use this tool when you need a specific individual view rather than a full
+    multi-view projection group.
+
+    Args:
+        doc_name: The name of the document.
+        page_name: The name of the TechDraw page object.
+        source_object: The name of the 3D object to project.
+        view_name: Name of the DrawViewPart object (default: "View").
+        direction: Projection direction vector [x, y, z].
+            Common directions:
+            - Front view: [0, -1, 0]
+            - Top view:   [0, 0, 1]
+            - Right view: [1, 0, 0]
+            Default: [0, -1, 0] (Front).
+        scale: View scale factor (default: 1.0).
+        x: X position on the page in mm (default: 0.0).
+        y: Y position on the page in mm (default: 0.0).
+
+    Returns:
+        A message indicating success or failure.
+    """
+    freecad = get_freecad_connection()
+    try:
+        options = {
+            "source_object": source_object,
+            "view_name": view_name,
+            "direction": direction if direction is not None else [0, -1, 0],
+            "scale": scale,
+            "x": x,
+            "y": y,
+        }
+        res = freecad.add_techdraw_view(doc_name, page_name, options)
+        if res["success"]:
+            response = [TextContent(type="text", text=f"TechDraw view '{res['view_name']}' added to page '{page_name}' in '{doc_name}'.")]
+            screenshot = freecad.get_techdraw_screenshot(doc_name, page_name)
+            return add_screenshot_if_available(response, screenshot)
+        else:
+            return [TextContent(type="text", text=f"Failed to add TechDraw view: {res['error']}")]
+    except Exception as e:
+        logger.error(f"Failed to add TechDraw view: {str(e)}")
+        return [TextContent(type="text", text=f"Failed to add TechDraw view: {str(e)}")]
+
+
 @mcp.prompt()
 def asset_creation_strategy() -> str:
     return """
@@ -611,6 +784,24 @@ Only revert to basic creation methods in the following cases:
 - When the required asset is not available in the parts library.
 - When a basic shape is explicitly requested.
 - When creating complex shapes requires custom scripting.
+
+## TechDraw (2D Drawing) Workflow
+
+When the user asks for engineering drawings, technical drawings, or 2D projections:
+
+1. Ensure the 3D model exists in a document first (use get_objects() to confirm).
+
+2. Create a drawing page with create_techdraw_page():
+   - Choose an appropriate paper size (A4_Landscape is a good default).
+   - Use a descriptive page_name such as "Drawing" or "Sheet1".
+
+3. Add views to the page:
+   - For standard multi-view drawings (front/top/right + isometric), use add_projection_group().
+     This creates a coordinated set of orthographic projections from a single anchor.
+   - For a single specific view, use add_techdraw_view() with the appropriate direction vector.
+
+4. TechDraw tools automatically return a screenshot of the page after each operation.
+   The screenshot is generated by rendering the page's SVG result to PNG.
 """
 
 
