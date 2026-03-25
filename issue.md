@@ -231,6 +231,7 @@ image.save(png_path)
 {
   "command": "C:\\Users\\user\\.local\\bin\\uvx.exe",
   "args": [
+    "--no-cache",
     "--from",
     "C:\\Users\\user\\Desktop\\freecad-mcp",
     "freecad-mcp"

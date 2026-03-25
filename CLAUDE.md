@@ -216,3 +216,10 @@ TechDraw 的 `MDIViewPage` 沒有 `saveImage()` 方法，改用以下方案：
 - 新增/修改 `server.py` 後需重啟 MCP server，新工具才會出現在 Claude 工具列表
 - `FreeCADConnection.server` 是 `xmlrpc.client.ServerProxy`，wrapper method 直接呼叫 `self.server.方法名()`
 - `QtSvg` import 有 `HAS_QT_SVG` fallback 保護，若不可用則 TechDraw 截圖回傳 None
+
+## 變更邊界限制（重要）
+
+- 本專案是從 https://github.com/neka-nat/freecad-mcp 的穩定版本 fork 而來。
+- 主要目標是在既有穩定功能上新增（或擴充）TechDraw 相關 MCP tools。
+- 在正常情況下，不允許修改原始框架與既有工具行為，避免引入不必要的崩潰風險。
+- 若確實需要調整原始框架或既有工具，必須先明確說明必要性、風險與影響範圍，並取得同意後再進行。
