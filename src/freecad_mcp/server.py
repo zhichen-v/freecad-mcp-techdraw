@@ -423,6 +423,39 @@ def delete_object(ctx: Context, doc_name: str, obj_name: str) -> list[TextConten
         ]
 
 
+def _try_techdraw_screenshot_fallback(freecad: FreeCADConnection) -> str | None:
+    """Try to capture a TechDraw screenshot when the active view is a TechDraw page.
+
+    Queries FreeCAD for the active TechDraw page and, if found, returns a
+    base64-encoded PNG screenshot via ``get_techdraw_screenshot``.
+    Returns ``None`` if no TechDraw page is active or on any error.
+    """
+    try:
+        probe = freecad.execute_code(
+            "import FreeCAD, FreeCADGui\n"
+            "view = FreeCADGui.ActiveDocument.ActiveView\n"
+            "if type(view).__name__ == 'MDIViewPagePy':\n"
+            "    page = view.getPage()\n"
+            "    print(FreeCAD.ActiveDocument.Name + '\\n' + page.Name)\n"
+            "else:\n"
+            "    print('')\n"
+        )
+        if not probe.get("success"):
+            return None
+        output = probe.get("message", "")
+        # The output from execute_code is prefixed with
+        # "Python code execution scheduled. \nOutput: "
+        if "Output: " in output:
+            output = output.split("Output: ", 1)[1]
+        lines = [l for l in output.strip().splitlines() if l.strip()]
+        if len(lines) >= 2:
+            doc_name, page_name = lines[0].strip(), lines[1].strip()
+            return freecad.get_techdraw_screenshot(doc_name, page_name)
+    except Exception as e:
+        logger.debug(f"TechDraw screenshot fallback failed: {e}")
+    return None
+
+
 @mcp.tool()
 def execute_code(ctx: Context, code: str) -> list[TextContent | ImageContent]:
     """Execute arbitrary Python code in FreeCAD.
@@ -437,7 +470,12 @@ def execute_code(ctx: Context, code: str) -> list[TextContent | ImageContent]:
     try:
         res = freecad.execute_code(code)
         screenshot = freecad.get_active_screenshot()
-        
+
+        # Fallback: if 3D screenshot is unavailable (e.g. TechDraw view is active),
+        # try to capture a TechDraw page screenshot instead.
+        if screenshot is None:
+            screenshot = _try_techdraw_screenshot_fallback(freecad)
+
         if res["success"]:
             response = [
                 TextContent(type="text", text=f"Code executed successfully: {res['message']}"),

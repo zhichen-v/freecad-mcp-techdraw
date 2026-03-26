@@ -459,6 +459,8 @@ class FreeCADRPC:
 
     def _get_techdraw_screenshot_gui(self, doc_name: str, page_name: str, save_path: str, width: int = 1920):
         try:
+            import TechDrawGui
+
             doc = FreeCAD.getDocument(doc_name)
             if doc is None:
                 return f"Document '{doc_name}' not found"
@@ -466,29 +468,37 @@ class FreeCADRPC:
             if page is None:
                 return f"Page '{page_name}' not found in '{doc_name}'"
 
-            svg_path = page.PageResult
-            if not svg_path or not os.path.exists(svg_path):
-                return f"No SVG result available for page '{page_name}'"
+            # Export SVG via TechDrawGui (FreeCAD 1.0 compatible)
+            fd, svg_path = tempfile.mkstemp(suffix=".svg")
+            os.close(fd)
+            try:
+                TechDrawGui.exportPageAsSvg(page, svg_path)
 
-            renderer = QtSvg.QSvgRenderer(svg_path)
-            if not renderer.isValid():
-                return f"Failed to load SVG from '{svg_path}'"
+                if not os.path.exists(svg_path) or os.path.getsize(svg_path) == 0:
+                    return f"Failed to export SVG for page '{page_name}'"
 
-            # Calculate height proportionally from the SVG's default size
-            default_size = renderer.defaultSize()
-            if default_size.width() > 0:
-                height = int(width * default_size.height() / default_size.width())
-            else:
-                height = int(width * 0.707)  # fallback to A4 ratio
+                renderer = QtSvg.QSvgRenderer(svg_path)
+                if not renderer.isValid():
+                    return f"Failed to load exported SVG for page '{page_name}'"
 
-            image = QtGui.QImage(width, height, QtGui.QImage.Format_ARGB32)
-            image.fill(QtCore.Qt.white)
-            painter = QtGui.QPainter(image)
-            renderer.render(painter)
-            painter.end()
+                # Calculate height proportionally from the SVG's default size
+                default_size = renderer.defaultSize()
+                if default_size.width() > 0:
+                    height = int(width * default_size.height() / default_size.width())
+                else:
+                    height = int(width * 0.707)  # fallback to A4 ratio
 
-            image.save(save_path)
-            return True
+                image = QtGui.QImage(width, height, QtGui.QImage.Format_ARGB32)
+                image.fill(QtCore.Qt.white)
+                painter = QtGui.QPainter(image)
+                renderer.render(painter)
+                painter.end()
+
+                image.save(save_path)
+                return True
+            finally:
+                if os.path.exists(svg_path):
+                    os.remove(svg_path)
         except Exception as e:
             return str(e)
 
@@ -678,6 +688,13 @@ class FreeCADRPC:
             page = doc.getObject(page_name)
             if not page:
                 return f"Page '{page_name}' not found in document '{doc_name}'."
+
+            # Validate that the page has a properly configured Template
+            if not hasattr(page, "Template") or page.Template is None:
+                return f"Page '{page_name}' has no Template set. Create the page with create_techdraw_page first."
+            tmpl = page.Template
+            if not hasattr(tmpl, "Template") or not tmpl.Template:
+                return f"Page '{page_name}' has an empty Template path. The template SVG may not have loaded correctly."
 
             source_names = options.get("source_objects", [])
             projections = options.get("projections", ["Front", "Top", "Right", "FrontTopRight"])
