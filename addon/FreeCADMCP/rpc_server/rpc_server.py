@@ -454,8 +454,62 @@ class FreeCADRPC:
         else:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-            FreeCAD.Console.PrintWarning(f"Failed to capture TechDraw screenshot: {res}\n")
-            return None
+            error_msg = f"Failed to capture TechDraw screenshot: {res}"
+            FreeCAD.Console.PrintWarning(error_msg + "\n")
+            raise RuntimeError(error_msg)
+
+    @staticmethod
+    def _fix_techdraw_svg_template_scale(svg_path: str):
+        """Fix TechDraw SVG export where template group gets an incorrect scale transform.
+
+        FreeCAD's ``TechDrawGui.exportPageAsSvg()`` wraps the template content
+        in a ``<g transform="scale(10, 10)">`` group, assuming the template
+        coordinates are in mm.  However, custom templates whose coordinates are
+        already at the viewBox scale (e.g. viewBox ``0 0 3000 2100`` with
+        coordinates in the 0–3000 range) will be scaled 10× beyond the
+        viewBox, causing only the top-left corner to render.
+
+        This method detects the situation by comparing the first numeric
+        coordinate found inside the template group against the viewBox width.
+        If the coordinate is already larger than half the viewBox width, the
+        ``scale(10, …)`` transform is redundant and is removed.
+        """
+        import re
+
+        try:
+            with open(svg_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # Find the viewBox width
+            vb_match = re.search(r'viewBox="([^"]+)"', content)
+            if not vb_match:
+                return
+            vb_parts = vb_match.group(1).split()
+            if len(vb_parts) < 3:
+                return
+            vb_width = float(vb_parts[2])
+
+            # Find the template group with a scale(10, 10) transform
+            pattern = r'transform="scale\(10\.0+,\s*10\.0+\)"'
+            scale_match = re.search(pattern, content)
+            if not scale_match:
+                return
+
+            # Find the first numeric coordinate inside the template group
+            # (look for a point value in a polyline/line/rect after the scale transform)
+            after_scale = content[scale_match.end():]
+            coord_match = re.search(r'points="([\d.]+)', after_scale)
+            if not coord_match:
+                return
+            first_coord = float(coord_match.group(1))
+
+            # If the coordinate is already at viewBox scale, remove the scale transform
+            if first_coord > vb_width * 0.5:
+                content = content[:scale_match.start()] + content[scale_match.end():]
+                with open(svg_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+        except Exception:
+            pass  # non-critical; fall back to original SVG
 
     def _get_techdraw_screenshot_gui(self, doc_name: str, page_name: str, save_path: str, width: int = 1920):
         try:
@@ -476,6 +530,9 @@ class FreeCADRPC:
 
                 if not os.path.exists(svg_path) or os.path.getsize(svg_path) == 0:
                     return f"Failed to export SVG for page '{page_name}'"
+
+                # Fix template scale transform if needed
+                self._fix_techdraw_svg_template_scale(svg_path)
 
                 renderer = QtSvg.QSvgRenderer(svg_path)
                 if not renderer.isValid():
@@ -627,9 +684,26 @@ class FreeCADRPC:
     def _resolve_template_path(self, template):
         """Resolve a template shortcut name or absolute path to a full SVG path.
 
+        When *template* is empty (``""``), the user's default template
+        configured in FreeCAD Preferences → TechDraw → General is used.
+
         Returns the resolved path string, or a list of available shortcut names
         if the template cannot be found.
         """
+        # Empty string → use FreeCAD's user-configured default template
+        if not template:
+            param = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/TechDraw/Files")
+            default_path = param.GetString("TemplateFile", "")
+            if default_path and os.path.exists(default_path):
+                return default_path
+            # Fallback: try the built-in A4 Landscape blank
+            templates_dir = os.path.join(
+                FreeCAD.getResourceDir(), "Mod", "TechDraw", "Templates"
+            )
+            fallback = os.path.join(templates_dir, "A4_Landscape_blank.svg")
+            if os.path.exists(fallback):
+                return fallback
+
         # Absolute path given and exists → use as-is
         if os.path.isabs(template) and os.path.exists(template):
             return template
@@ -717,6 +791,7 @@ class FreeCADRPC:
             page.addView(group)
             group.Source = sources
             group.ProjectionType = projection_type
+            group.ScaleType = "Custom"
             group.Scale = scale
             group.X = x
             group.Y = y
@@ -771,6 +846,7 @@ class FreeCADRPC:
             page.addView(view)
             view.Source = [source]
             view.Direction = FreeCAD.Vector(*direction)
+            view.ScaleType = "Custom"
             view.Scale = scale
             view.X = x
             view.Y = y

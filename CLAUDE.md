@@ -1,4 +1,4 @@
-# FreeCAD MCP Techdraw Extension 專案
+# FreeCAD MCP TechDraw Extension 專案
 
 ## 專案概覽
 
@@ -19,207 +19,82 @@ freecad-mcp/
 │   ├── test.stp                            # 測試用 3D STP 檔（11×1×16mm 小型零件）
 │   └── test.png                            # TechDraw 投影參考截圖（驗證基準）
 ├── src/freecad_mcp/
-│   ├── __init__.py                         # 空
-│   ├── py.typed                            # PEP 561 型別標記
-│   └── server.py                           # MCP Server 主程式（~840 行）
-│                                           #   - FreeCADConnection class（XML-RPC client wrapper）
-│                                           #   - @mcp.tool() 工具定義（14 個）
-│                                           #   - @mcp.prompt() 提示定義（1 個）
-│                                           #   - add_screenshot_if_available() 截圖輔助
-│                                           #   - main() CLI 入口（--only-text-feedback, --host）
+│   ├── server.py                           # MCP Server 主程式
+│   ├── __init__.py
+│   └── py.typed
 ├── addon/FreeCADMCP/                       # FreeCAD Addon（複製到 FreeCAD Mod 目錄）
-│   ├── Init.py                             # 空（FreeCAD 要求）
 │   ├── InitGui.py                          # Workbench 註冊 + auto-start RPC
 │   └── rpc_server/
-│       ├── __init__.py                     # re-export rpc_server
-│       ├── rpc_server.py                   # RPC Server 主程式（~1020 行）
-│       │                                   #   - FreeCADRPC class（所有 RPC 方法）
-│       │                                   #   - FilteredXMLRPCServer（IP 過濾）
-│       │                                   #   - GUI Command classes（5 個 toolbar 按鈕）
-│       │                                   #   - start/stop_rpc_server()
-│       │                                   #   - process_gui_tasks()（QTimer 驅動的 queue 消費）
+│       ├── rpc_server.py                   # RPC Server 主程式（FreeCADRPC class）
 │       ├── serialize.py                    # FreeCAD 物件 → dict 序列化
-│       │                                   #   - serialize_value/shape/view_object/object
 │       └── parts_library.py               # 零件庫操作
-│                                           #   - insert_part_from_library()
-│                                           #   - get_parts_list()（@cache）
-└── examples/
-    ├── adk/                                # Google ADK 整合範例
-    │   ├── .env                            # API key 設定
-    │   ├── __init__.py
-    │   └── agent.py
-    └── langchain/
-        └── react.py                        # LangChain ReAct 範例
-
+└── examples/                               # ADK / LangChain 整合範例
 ```
 
-## 通訊流程
+## 新增工具
 
-```
-Claude ─(stdio)→ MCP Server (server.py)
-                    │
-                    ├─ FreeCADConnection.method()    ← XML-RPC client wrapper
-                    │         │
-                    │         ▼
-                    │  xmlrpc.client.ServerProxy ─(HTTP)→ FreeCADRPC (rpc_server.py)
-                    │                                          │
-                    │                                          ├─ public method: 放入 rpc_request_queue
-                    │                                          │
-                    │                                          ▼
-                    │                                   process_gui_tasks() ← QTimer 每 50ms 觸發
-                    │                                          │
-                    │                                          ├─ _xxx_gui(): 在 FreeCAD 主執行緒執行
-                    │                                          │
-                    │                                          ▼
-                    │                                   rpc_response_queue.put(result)
-                    │                                          │
-                    ▼                                          ▼
-              回傳 TextContent / ImageContent          XML-RPC response
-```
+新增 MCP 工具請使用 `freecad-mcp-tool-builder` skill（`.claude/skills/`），
+該 skill 包含完整的四層架構模式、程式碼模板與 checklist。
 
-## 新增工具的模式
-
-每個新工具需要修改兩個檔案，三層架構：
-
-1. **rpc_server.py** — `FreeCADRPC` class 中新增：
-   - Public method：將 lambda 放入 `rpc_request_queue`，從 `rpc_response_queue` 取結果
-   - Private `_xxx_gui` method：在 FreeCAD 主執行緒執行實際操作
-
-2. **server.py** — 新增：
-   - `FreeCADConnection` class wrapper method（透過 `self.server` 呼叫 RPC）
-   - `@mcp.tool()` decorated function（MCP 工具定義）
+簡要說明：每個新工具需要修改 `rpc_server.py`（RPC 端）與 `server.py`（MCP 端），共四層：
+`_xxx_gui()` → public RPC method → `FreeCADConnection` wrapper → `@mcp.tool()`
 
 ## 已實作的 MCP 工具
 
 ### 基本工具
 
-| 工具                       | server.py 行號 | 說明                                     |
-| -------------------------- | -------------- | ---------------------------------------- |
-| `create_document`          | ~174           | 建立新文件                               |
-| `create_object`            | ~210           | 建立物件（Part/Draft/PartDesign/Fem 等） |
-| `edit_object`              | ~357           | 編輯物件屬性                             |
-| `delete_object`            | ~394           | 刪除物件                                 |
-| `execute_code`             | ~427           | 執行任意 Python 程式碼                   |
-| `get_view`                 | ~459           | 截取 3D 視圖截圖                         |
-| `get_objects`              | ~523           | 列出文件中所有物件                       |
-| `get_object`               | ~548           | 取得單一物件詳細資訊                     |
-| `list_documents`           | ~590           | 列出開啟的文件                           |
-| `insert_part_from_library` | ~491           | 從零件庫插入零件                         |
-| `get_parts_list`           | ~574           | 列出零件庫清單                           |
+| 工具                       | 說明                                     |
+| -------------------------- | ---------------------------------------- |
+| `create_document`          | 建立新文件                               |
+| `create_object`            | 建立物件（Part/Draft/PartDesign/Fem 等） |
+| `edit_object`              | 編輯物件屬性                             |
+| `delete_object`            | 刪除物件                                 |
+| `execute_code`             | 執行任意 Python 程式碼（見下方使用限制） |
+| `get_view`                 | 截取 3D 視圖截圖                         |
+| `get_objects`              | 列出文件中所有物件                       |
+| `get_object`               | 取得單一物件詳細資訊                     |
+| `list_documents`           | 列出開啟的文件                           |
+| `insert_part_from_library` | 從零件庫插入零件                         |
+| `get_parts_list`           | 列出零件庫清單                           |
 
 ### TechDraw 工具
 
-| 工具                   | server.py 行號 | 說明                                                       |
-| ---------------------- | -------------- | ---------------------------------------------------------- |
-| `create_techdraw_page` | ~602           | 建立 TechDraw 圖紙頁面（A0–A4 × Landscape/Portrait）       |
-| `add_projection_group` | ~636           | 建立多視圖投影群組（DrawProjGroup），支援第一角/第三角投影 |
-| `add_techdraw_view`    | ~702           | 建立單一 2D 投影視圖（DrawViewPart）                       |
+| 工具                   | 說明                                                       |
+| ---------------------- | ---------------------------------------------------------- |
+| `create_techdraw_page` | 建立 TechDraw 圖紙頁面（A0–A4 × Landscape/Portrait）       |
+| `add_projection_group` | 建立多視圖投影群組（DrawProjGroup），支援第一角/第三角投影 |
+| `add_techdraw_view`    | 建立單一 2D 投影視圖（DrawViewPart）                       |
 
 ### Prompt
 
-| 名稱                      | server.py 行號 | 說明                                       |
-| ------------------------- | -------------- | ------------------------------------------ |
-| `asset_creation_strategy` | ~759           | 建立資產的策略指引（含 TechDraw 工作流程） |
+| 名稱                      | 說明                                       |
+| ------------------------- | ------------------------------------------ |
+| `asset_creation_strategy` | 建立資產的策略指引（含 TechDraw 工作流程） |
 
-## 截圖機制
+## `execute_code` 使用限制（重要）
 
-### 3D 視圖截圖
+`execute_code` 是用於**修改核心代碼前的測試與驗證**，不應跳過既有 MCP 工具而直接作為替代方案使用。
 
-- 透過 `FreeCADGui.ActiveDocument.ActiveView.saveImage()` 截取
-- 支援 Isometric/Front/Top/Right/Back/Left/Bottom/Dimetric/Trimetric 視角
-- 不支援的視圖型別（TechDraw、Spreadsheet）由 `get_active_screenshot()` 回傳 None
+### 禁止用法
 
-### TechDraw 截圖（SVG → PNG）
+- **禁止用 `execute_code` 重寫已有 MCP 工具的功能**：例如不可手動寫 SVG→PNG 截圖代碼來取代 `get_techdraw_screenshot`，因為這會繞過 `rpc_server.py` 中的修復邏輯（如 `_fix_techdraw_svg_template_scale`），導致截圖結果錯誤。
+- **禁止用 `execute_code` 直接操作 TechDraw**：應使用 `create_techdraw_page`、`add_projection_group`、`add_techdraw_view` 等專用 MCP 工具，這些工具內建了正確的參數處理（如 `ScaleType = "Custom"`）和自動截圖。
+- **禁止在 `execute_code` 中直接呼叫 RPC 實例方法**：會導致線程衝突或遞迴，可能造成 FreeCAD 崩潰。
 
-TechDraw 的 `MDIViewPage` 沒有 `saveImage()` 方法，改用以下方案：
+### 正確用法
 
-1. `TechDrawGui.exportPageAsSvg(page, tmp_path)` → 匯出 SVG 至暫存檔
-2. `QSvgRenderer` 載入 SVG
-3. `QImage` + `QPainter` 渲染為 PNG（預設寬度 1920px，等比例計算高度）
-4. 讀取 PNG → base64 回傳，清除暫存 SVG
+- **測試與驗證**：在修改 `rpc_server.py` 或 `server.py` 前，先用 `execute_code` 小範圍測試 FreeCAD API 行為
+- **查詢資訊**：取得 BoundBox、物件屬性、模組狀態等輔助資訊
+- **匯入檔案**：`Import.open(stp_path)` 等尚無對應 MCP 工具的操作
+- **最終驗證截圖**：在所有 MCP 工具操作完成後，用 `execute_code` 做最終的 SVG→PNG 驗證時，**必須包含 `_fix_techdraw_svg_template_scale` 等同邏輯**，不可省略
 
-> **注意**：舊版 FreeCAD（<=0.21）使用 `page.PageResult` 取得 SVG 路徑，但此屬性在 FreeCAD 1.0 已移除。
-> 同樣，`TechDraw.writeSVGPage()` 在 FreeCAD 1.0 也已不存在，須使用 `TechDrawGui.exportPageAsSvg()`。
+## 截圖機制注意事項
 
-相關程式碼：
-
-- `rpc_server.py`: `get_techdraw_screenshot()` + `_get_techdraw_screenshot_gui()`
-- `server.py`: `FreeCADConnection.get_techdraw_screenshot()`, 三個 TechDraw 工具成功後自動呼叫
-
-### `execute_code` 的 TechDraw 截圖 Fallback
-
-當 `execute_code` 工具執行後，若 active view 為 TechDraw 頁面（`MDIViewPagePy`），3D 截圖會回傳 `None`。
-此時 `server.py` 中的 `_try_techdraw_screenshot_fallback()` 會自動偵測當前 TechDraw 頁面，
-透過 `get_techdraw_screenshot()` 取得 SVG→PNG 截圖作為 fallback。
-
-相關程式碼：
-
-- `server.py`: `_try_techdraw_screenshot_fallback()` helper function
-
-優點：不依賴視窗前景、解析度可控、無額外依賴（Qt 原生 SVG 支援）
-
-## TechDraw 實作細節
-
-### TECHDRAW_TEMPLATES 常數（rpc_server.py）
-
-快捷名 → SVG 檔名對應，模板位於：
-`{FreeCAD.getResourceDir()}/Mod/TechDraw/Templates/`
-
-快捷名格式：`A0_Landscape`、`A1_Portrait`、`A2_Landscape` … `A4_Portrait`
-
-### 模板路徑解析邏輯（`_resolve_template_path`）
-
-1. 若為絕對路徑且存在 → 直接使用
-2. 查快捷名字典 → 組合完整路徑
-3. 找不到 → 回傳可用快捷名清單（供錯誤訊息使用）
-
-### DrawProjGroup 建立順序
-
-0. 驗證 Page 的 Template 已正確設定（避免 Anchor 損壞）
-1. `addProjection("Front")` 必須第一個呼叫（建立 Anchor）
-2. 設定 `anchor.Direction` 與 `anchor.RotationVector`
-3. 依序呼叫其他 `addProjection()`，跳過重複的 "Front"
-
-有效投影值：`Front`, `Left`, `Right`, `Top`, `Bottom`, `Rear`, `FrontTopLeft`, `FrontTopRight`, `FrontBottomLeft`, `FrontBottomRight`
-
-### 常用方向向量
-
-| 視圖      | Direction               |
-| --------- | ----------------------- |
-| Front     | (0, -1, 0)              |
-| Top       | (0, 0, 1)               |
-| Right     | (1, 0, 0)               |
-| Isometric | (-0.577, -0.577, 0.577) |
-
-## RPC Server 架構（rpc_server.py）
-
-### 執行緒模型
-
-- XML-RPC server 在獨立 daemon thread 執行
-- GUI 操作必須在主執行緒：public method 將 lambda 放入 `rpc_request_queue`
-- `process_gui_tasks()` 由 `QTimer` 每 50ms 觸發，從 queue 取出並執行
-- 結果透過 `rpc_response_queue` 回傳
-
-### GUI Commands（Toolbar 按鈕）
-
-| Command class                    | 說明                                 |
-| -------------------------------- | ------------------------------------ |
-| `StartRPCServerCommand`          | 啟動 RPC Server                      |
-| `StopRPCServerCommand`           | 停止 RPC Server                      |
-| `ToggleAutoStartCommand`         | 切換 FreeCAD 啟動時自動啟動 RPC      |
-| `ToggleRemoteConnectionsCommand` | 切換遠端連線（0.0.0.0 vs localhost） |
-| `ConfigureAllowedIPsCommand`     | 設定允許的 IP 白名單                 |
-
-### 設定檔
-
-- 路徑：`{FreeCAD.getUserAppDataDir()}/freecad_mcp_settings.json`
-- 欄位：`auto_start_rpc`, `remote_enabled`, `allowed_ips`
-- 透過 `load_settings()` / `save_settings()` 操作
-
-### 物件建立輔助
-
-- `Object` dataclass：封裝 `obj_type`, `obj_name`, `properties`
-- `set_object_property()`：處理各類 FreeCAD 屬性設定（Placement, Vector, Color, list 等）
+- **3D 視圖**：透過 `saveImage()` 截取，不支援 TechDraw / Spreadsheet 視圖
+- **TechDraw 截圖**：使用 `TechDrawGui.exportPageAsSvg()` → `QSvgRenderer` → PNG 的 SVG 轉換方案
+- **SVG 模板 scale 修正**：`TechDrawGui.exportPageAsSvg()` 會對模板群組加上 `transform="scale(10, 10)"`，假設模板座標為 mm 單位。但自訂模板（如 `tech_draw_test_template.svg`，viewBox `0 0 3000 2121`，座標已在 ~3000 範圍）會被放大 10 倍超出 viewBox，導致只截到左上角。`_fix_techdraw_svg_template_scale()` 靜態方法會在 SVG 匯出後偵測此情況並移除多餘的 scale transform。偵測邏輯：若模板群組內第一個座標值 > viewBox 寬度的 50%，則移除 scale(10)。此修正對 FreeCAD 內建模板（mm 座標 ~0-297）不會生效，僅影響座標系已放大的自訂模板。
+- **`execute_code` 無 TechDraw 截圖**：`execute_code` 僅使用 3D 視圖截圖（`get_active_screenshot`），不嘗試 TechDraw 截圖。TechDraw 截圖由專用 MCP 工具（`create_techdraw_page`、`add_projection_group`、`add_techdraw_view`）內建處理。
+- **舊 API 已移除**：`page.PageResult` 與 `TechDraw.writeSVGPage()` 在 FreeCAD 1.0 不存在，必須用 `TechDrawGui.exportPageAsSvg()`
 
 ## 設計決策
 
@@ -232,7 +107,6 @@ TechDraw 的 `MDIViewPage` 沒有 `saveImage()` 方法，改用以下方案：
 
 - 新增/修改 `rpc_server.py` 後需重新載入 FreeCAD Addon（或重啟 FreeCAD）
 - 新增/修改 `server.py` 後需重啟 MCP server，新工具才會出現在 Claude 工具列表
-- `FreeCADConnection.server` 是 `xmlrpc.client.ServerProxy`，wrapper method 直接呼叫 `self.server.方法名()`
 - `QtSvg` import 有 `HAS_QT_SVG` fallback 保護，若不可用則 TechDraw 截圖回傳 None
 
 ## FreeCAD 1.0 相容性注意
@@ -246,13 +120,12 @@ TechDraw 的 `MDIViewPage` 沒有 `saveImage()` 方法，改用以下方案：
 
 ### TechDraw 模板
 
-- **專案自訂模板**：`tech_draw_test_template.svg`（位於專案根目錄）
-  - 格式：A4 Landscape（297×210mm）
+- **專案自訂模板**：`tech_draw_test_template.svg`（A4 Landscape，297×210mm）
   - 使用方式：`create_techdraw_page` 的 `template` 參數傳入絕對路徑
     ```
     C:/Users/user/Desktop/freecad-mcp/tech_draw_test_template.svg
     ```
-- **FreeCAD 預設模板**：使用者已在 FreeCAD 中設定好預設 template，建立 TechDraw 頁面時即使不指定模板也會載入預設模板，而不是建立完全空白的頁面
+- **FreeCAD 預設模板**：使用者已在 FreeCAD 中設定好預設 template，不指定模板也會載入預設模板
 - **完全空白頁面**是最後的選項，正常情況下不應出現
 
 ### 測試用 3D 檔案
@@ -309,7 +182,20 @@ TechDraw 的 `MDIViewPage` 沒有 `saveImage()` 方法，改用以下方案：
 - 所有視圖的 X, Y 座標必須在頁面範圍內
 - 留出足夠邊距，考慮視圖本身的寬高（= 物件尺寸 × Scale）
 
-#### 3. Scale 計算不當
+#### 3. ScaleType 未設為 Custom（重要）
+
+**問題**：TechDraw 視圖的 `ScaleType` 預設為 `"Page"`，表示使用頁面的預設 Scale（通常為 1.0）。即使透過 MCP 工具傳入 `scale` 參數，若 `ScaleType` 仍為 `"Page"`，Scale 值不會生效，視圖永遠以 Scale=1.0 顯示。
+
+**正確做法**（已在 `rpc_server.py` 中修正）：
+- 在設定 `Scale` 值之前，必須先將 `ScaleType` 設為 `"Custom"`
+- `_add_projection_group_gui()` 和 `_add_techdraw_view_gui()` 中的順序：
+  ```python
+  view.ScaleType = "Custom"  # 必須先設定
+  view.Scale = scale          # 之後設定才會生效
+  ```
+- FreeCAD `ScaleType` 可用值：`"Page"`（使用頁面預設）、`"Automatic"`（自動計算）、`"Custom"`（使用手動指定值）
+
+#### 4. Scale 計算不當
 
 **問題**：未先查詢物件尺寸就設定 Scale，導致視圖過大或過小。
 
@@ -319,7 +205,7 @@ TechDraw 的 `MDIViewPage` 沒有 `saveImage()` 方法，改用以下方案：
 - 參考公式：`scale = 可用空間 / (物件尺寸 × 視圖數量的空間分配)`
 - 對於 sample/test.stp（11×1×16mm），Scale=7 的投影群組 + Scale=5 的等角視圖是合適的
 
-#### 4. TechDraw 截圖時機
+#### 5. TechDraw 截圖時機
 
 **問題**：MCP 工具回傳的截圖可能是空白或不完整的，因為 TechDraw 視圖可能尚未完成渲染。
 

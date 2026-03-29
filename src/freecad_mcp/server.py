@@ -160,13 +160,6 @@ def add_screenshot_if_available(response, screenshot):
     """Safely add screenshot to response only if it's available"""
     if screenshot is not None and not _only_text_feedback:
         response.append(ImageContent(type="image", data=screenshot, mimeType="image/png"))
-    elif not _only_text_feedback:
-        # Add an informative message that will be seen by the AI model and user
-        response.append(TextContent(
-            type="text", 
-            text="Note: Visual preview is unavailable in the current view type (such as TechDraw or Spreadsheet). "
-                 "Switch to a 3D view to see visual feedback."
-        ))
     return response
 
 
@@ -423,39 +416,6 @@ def delete_object(ctx: Context, doc_name: str, obj_name: str) -> list[TextConten
         ]
 
 
-def _try_techdraw_screenshot_fallback(freecad: FreeCADConnection) -> str | None:
-    """Try to capture a TechDraw screenshot when the active view is a TechDraw page.
-
-    Queries FreeCAD for the active TechDraw page and, if found, returns a
-    base64-encoded PNG screenshot via ``get_techdraw_screenshot``.
-    Returns ``None`` if no TechDraw page is active or on any error.
-    """
-    try:
-        probe = freecad.execute_code(
-            "import FreeCAD, FreeCADGui\n"
-            "view = FreeCADGui.ActiveDocument.ActiveView\n"
-            "if type(view).__name__ == 'MDIViewPagePy':\n"
-            "    page = view.getPage()\n"
-            "    print(FreeCAD.ActiveDocument.Name + '\\n' + page.Name)\n"
-            "else:\n"
-            "    print('')\n"
-        )
-        if not probe.get("success"):
-            return None
-        output = probe.get("message", "")
-        # The output from execute_code is prefixed with
-        # "Python code execution scheduled. \nOutput: "
-        if "Output: " in output:
-            output = output.split("Output: ", 1)[1]
-        lines = [l for l in output.strip().splitlines() if l.strip()]
-        if len(lines) >= 2:
-            doc_name, page_name = lines[0].strip(), lines[1].strip()
-            return freecad.get_techdraw_screenshot(doc_name, page_name)
-    except Exception as e:
-        logger.debug(f"TechDraw screenshot fallback failed: {e}")
-    return None
-
-
 @mcp.tool()
 def execute_code(ctx: Context, code: str) -> list[TextContent | ImageContent]:
     """Execute arbitrary Python code in FreeCAD.
@@ -470,11 +430,6 @@ def execute_code(ctx: Context, code: str) -> list[TextContent | ImageContent]:
     try:
         res = freecad.execute_code(code)
         screenshot = freecad.get_active_screenshot()
-
-        # Fallback: if 3D screenshot is unavailable (e.g. TechDraw view is active),
-        # try to capture a TechDraw page screenshot instead.
-        if screenshot is None:
-            screenshot = _try_techdraw_screenshot_fallback(freecad)
 
         if res["success"]:
             response = [
@@ -641,7 +596,7 @@ def create_techdraw_page(
     ctx: Context,
     doc_name: str,
     page_name: str = "Page",
-    template: str = "A4_Landscape",
+    template: str = "",
 ) -> list[TextContent | ImageContent]:
     """Create a TechDraw drawing page in a FreeCAD document.
 
@@ -651,6 +606,8 @@ def create_techdraw_page(
         template: Template shortcut name (e.g. "A4_Landscape", "A3_Portrait") or
                   an absolute path to an SVG template file.
                   Available shortcuts: A0/A1/A2/A3/A4 × Landscape/Portrait.
+                  Default is "" (empty string), which uses the user's default
+                  template configured in FreeCAD Preferences (TechDraw → General).
 
     Returns:
         A message indicating success or failure, and a screenshot of the page.
